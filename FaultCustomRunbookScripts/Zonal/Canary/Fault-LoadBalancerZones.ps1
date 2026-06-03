@@ -506,9 +506,15 @@ foreach ($r in $results) {
     }
     $durationMs = [int]([Math]::Round((($endTime) - $startTime).TotalMilliseconds))
     $err = $null
-    if (-not $r.IsSuccess) { $err = @{ ErrorCode='FailedToFaultResource'; Message=$r.ErrorMessage; Details=$r.ErrorMessage; Category=$r.Status; IsRetryable=$false } }
+    $metadata = @{ Status = $r.Status; DurationMinutes = $Duration }
+    if ($r.Status -eq 'Skipped') {
+        if ($r.ErrorMessage) { $metadata['Reason'] = $r.ErrorMessage }
+    }
+    elseif (-not $r.IsSuccess) {
+        $err = @{ ErrorCode='FailedToFaultResource'; Message=$r.ErrorMessage; Details=$r.ErrorMessage; Category=$r.Status; IsRetryable=$false }
+    }
     $processedAtUtc = $endTime.ToUniversalTime()
-    $resourceResults += @{ ResourceId=$r.ResourceId; IsSuccess=$r.IsSuccess; Error=$err; ProcessedAt=$processedAtUtc; ProcessingDurationMs=$durationMs; Metadata=@{ Status=$r.Status; DurationMinutes=$Duration } }
+    $resourceResults += @{ ResourceId=$r.ResourceId; IsSuccess=$r.IsSuccess; Error=$err; ProcessedAt=$processedAtUtc; ProcessingDurationMs=$durationMs; Metadata=$metadata }
 }
 
 foreach ($unexpected in $unexpectedOutputs) {

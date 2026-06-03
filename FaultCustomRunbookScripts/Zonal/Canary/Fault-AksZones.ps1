@@ -522,11 +522,15 @@ foreach ($op in $operationObjects) {
     }
     $durationMs = [int]([Math]::Round((($endTime) - $startTime).TotalMilliseconds))
     $err = $null
-    if (-not $op.IsSuccess) {
+    $metadata = @{ Status = $op.Status }
+    if ($op.Status -eq 'Skipped') {
+        if ($op.ErrorMessage) { $metadata['Reason'] = $op.ErrorMessage }
+    }
+    elseif (-not $op.IsSuccess) {
         $err = @{ ErrorCode='FailedToFaultResource'; Message=$op.ErrorMessage; Details=$op.ErrorMessage; Category=$op.Status; IsRetryable=$false }
     }
     $processedAtUtc = $endTime.ToUniversalTime()
-    $resourceResults += @{ ResourceId=$op.ResourceId; IsSuccess=$op.IsSuccess; Error=$err; ProcessedAt=$processedAtUtc; ProcessingDurationMs=$durationMs; Metadata=@{ Status=$op.Status } }
+    $resourceResults += @{ ResourceId=$op.ResourceId; IsSuccess=$op.IsSuccess; Error=$err; ProcessedAt=$processedAtUtc; ProcessingDurationMs=$durationMs; Metadata=$metadata }
 }
 
 foreach ($unexpected in $unexpectedOutputs) {
