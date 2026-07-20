@@ -500,9 +500,18 @@ if ($operationObjects.Count -eq 0 -and $unexpectedOutputs.Count -gt 0) {
 
 $scriptEnd = Get-Date
 $successCount = ($operationObjects | Where-Object { $_.IsSuccess }).Count
-$failureCount = ($operationObjects | Where-Object { -not $_.IsSuccess }).Count
+$skippedCount = ($operationObjects | Where-Object { $_.Status -eq 'Skipped' }).Count
+$failureCount = ($operationObjects | Where-Object { -not $_.IsSuccess -and $_.Status -ne 'Skipped' }).Count
 $failureCount += $unexpectedOutputs.Count
-$overallStatus = if ($failureCount -eq 0) { 'Success' } elseif ($successCount -gt 0) { 'PartialSuccess' } else { 'Failed' }
+# A skipped resource (no eligible nodes to fault in the target zone) is surfaced as a dedicated
+# user error (RHDSUserErrorAKSNoNodesToFaultInTargetZone) and downgrades the run to PartialSuccess.
+$overallStatus = if ($failureCount -gt 0 -and $successCount -eq 0 -and $skippedCount -eq 0) {
+    'Failed'
+} elseif ($failureCount -gt 0 -or $skippedCount -gt 0) {
+    'PartialSuccess'
+} else {
+    'Success'
+}
 
 $resourceResults = @()
 foreach ($op in $operationObjects) {
@@ -524,7 +533,8 @@ foreach ($op in $operationObjects) {
     $err = $null
     $metadata = @{ Status = $op.Status }
     if ($op.Status -eq 'Skipped') {
-        if ($op.ErrorMessage) { $metadata['Reason'] = $op.ErrorMessage }
+        # No eligible nodes to fault in the target zone - report as a dedicated user error.
+        $err = @{ ErrorCode='RHDSUserErrorAKSNoNodesToFaultInTargetZone'; Message=$op.ErrorMessage; Details=$op.ErrorMessage; Category='Skipped'; IsRetryable=$false }
     }
     elseif (-not $op.IsSuccess) {
         $err = @{ ErrorCode='FailedToFaultResource'; Message=$op.ErrorMessage; Details=$op.ErrorMessage; Category=$op.Status; IsRetryable=$false }
@@ -550,13 +560,18 @@ $executionResult = [ordered]@{
 $executionJson = $executionResult | ConvertTo-Json -Depth 6
 Write-Output $executionJson
 
-# Fail the runbook if any resource could not be faulted
+# Fail the runbook only on genuine faults. Skipped resources (no eligible nodes to fault in the
+# target zone) are reported as a dedicated user error with PartialSuccess and do not fail the run.
 if ($failureCount -gt 0) {
     $errorMsg = "Runbook failed: $failureCount out of $($AksTargetList.Count) AKS cluster(s) could not be faulted. Status: $overallStatus"
     Write-Error $errorMsg -ErrorAction Stop
     throw $errorMsg
 }
 
-Write-Verbose "All AKS zone fault operations completed successfully."
+if ($skippedCount -gt 0) {
+    Write-Verbose "AKS zone fault completed with PartialSuccess. $skippedCount of $($AksTargetList.Count) cluster(s) had no eligible nodes to fault in the target zone (RHDSUserErrorAKSNoNodesToFaultInTargetZone)."
+} else {
+    Write-Verbose "All AKS zone fault operations completed successfully."
+}
 
 #endregion

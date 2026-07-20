@@ -330,7 +330,7 @@ $functions = {
             $uniqueProbesToOverride = $probesToOverride | Select-Object -Unique
             if (-not $uniqueProbesToOverride) {
                 Write-Log "No health probes found for zoned backends on LB '$LBName'. Nothing to override." "WARNING"
-                return [pscustomobject]@{ IsSuccess = $true; Status = 'Skipped'; Message = 'No health probes found for zoned backends.' }
+                return [pscustomobject]@{ IsSuccess = $false; Status = 'Skipped'; Message = 'No health probes found for zoned backends in the target zone.' }
             }
 
             # Capture original probe settings before override
@@ -484,9 +484,18 @@ if ($results.Count -eq 0 -and $unexpectedOutputs.Count -gt 0) {
 
 $scriptEnd = Get-Date
 $successCount = ($results | Where-Object { $_.IsSuccess }).Count
-$failureCount = ($results | Where-Object { -not $_.IsSuccess }).Count
+$skippedCount = ($results | Where-Object { $_.Status -eq 'Skipped' }).Count
+$failureCount = ($results | Where-Object { -not $_.IsSuccess -and $_.Status -ne 'Skipped' }).Count
 $failureCount += $unexpectedOutputs.Count
-$overallStatus = if ($failureCount -eq 0) { 'Success' } elseif ($successCount -gt 0) { 'PartialSuccess' } else { 'Failed' }
+# A skipped resource (no probes for zoned backends to fault in the target zone) is surfaced as a
+# dedicated user error (RHDSUserErrorLBNoProbesToFaultInTargetZone) and downgrades the run to PartialSuccess.
+$overallStatus = if ($failureCount -gt 0 -and $successCount -eq 0 -and $skippedCount -eq 0) {
+    'Failed'
+} elseif ($failureCount -gt 0 -or $skippedCount -gt 0) {
+    'PartialSuccess'
+} else {
+    'Success'
+}
 
 $resourceResults = @()
 foreach ($r in $results) {
@@ -508,7 +517,8 @@ foreach ($r in $results) {
     $err = $null
     $metadata = @{ Status = $r.Status; DurationMinutes = $Duration }
     if ($r.Status -eq 'Skipped') {
-        if ($r.ErrorMessage) { $metadata['Reason'] = $r.ErrorMessage }
+        # No probes for zoned backends to fault in the target zone - report as a dedicated user error.
+        $err = @{ ErrorCode='RHDSUserErrorLBNoProbesToFaultInTargetZone'; Message=$r.ErrorMessage; Details=$r.ErrorMessage; Category='Skipped'; IsRetryable=$false }
     }
     elseif (-not $r.IsSuccess) {
         $err = @{ ErrorCode='FailedToFaultResource'; Message=$r.ErrorMessage; Details=$r.ErrorMessage; Category=$r.Status; IsRetryable=$false }
@@ -534,13 +544,18 @@ $executionResult = [ordered]@{
 $executionJson = $executionResult | ConvertTo-Json -Depth 6
 Write-Output $executionJson
 
-# Fail the runbook if any resource could not be faulted
+# Fail the runbook only on genuine faults. Skipped resources (no probes for zoned backends to fault
+# in the target zone) are reported as a dedicated user error with PartialSuccess and do not fail the run.
 if ($failureCount -gt 0) {
     $errorMsg = "Runbook failed: $failureCount out of $($lbTargets.Count) Load Balancer(s) could not be faulted. Status: $overallStatus"
     Write-Error $errorMsg -ErrorAction Stop
     throw $errorMsg
 }
 
-Write-Verbose "All Load Balancer health probe override operations completed successfully."
+if ($skippedCount -gt 0) {
+    Write-Verbose "Load Balancer probe override completed with PartialSuccess. $skippedCount of $($lbTargets.Count) load balancer(s) had no probes for zoned backends to fault in the target zone (RHDSUserErrorLBNoProbesToFaultInTargetZone)."
+} else {
+    Write-Verbose "All Load Balancer health probe override operations completed successfully."
+}
 
 #endregion
